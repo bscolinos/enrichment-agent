@@ -1,0 +1,109 @@
+version: "3.9"
+
+services:
+  singlestore:
+    image: singlestore/cluster-in-a-box:latest
+    container_name: singlestore
+    ports:
+      - "3306:3306"
+      - "8080:8080"
+    environment:
+      - ROOT_PASSWORD=${SINGLESTORE_PASSWORD:-singlestore}
+    volumes:
+      - ./schema/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "mysqladmin ping -h 127.0.0.1 -u root -p$${ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --reserve-memory
+      - "0M"
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+
+  agent:
+    build:
+      context: ./agent
+    container_name: lead-agent
+    environment:
+      - SINGLESTORE_HOST=singlestore
+      - SINGLESTORE_PORT=3306
+      - SINGLESTORE_USER=root
+      - SINGLESTORE_PASSWORD=${SINGLESTORE_PASSWORD:-singlestore}
+      - SINGLESTORE_DATABASE=leads_demo
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - POLL_INTERVAL_SECONDS=4
+    depends_on:
+      singlestore:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ./api
+    container_name: lead-api
+    ports:
+      - "8000:8000"
+    environment:
+      - SINGLESTORE_HOST=singlestore
+      - SINGLESTORE_PORT=3306
+      - SINGLESTORE_USER=root
+      - SINGLESTORE_PASSWORD=${SINGLESTORE_PASSWORD:-singlestore}
+      - SINGLESTORE_DATABASE=leads_demo
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+    depends_on:
+      singlestore:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: ./ui
+    container_name: lead-ui
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - api
+
+  generator:
+    build:
+      context: ./generator
+    container_name: lead-generator
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
+      - SINGLESTORE_HOST=singlestore
+      - SINGLESTORE_PORT=3306
+      - SINGLESTORE_USER=root
+      - SINGLESTORE_PASSWORD=${SINGLESTORE_PASSWORD:-singlestore}
+      - SINGLESTORE_DATABASE=leads_demo
+      - GENERATOR_INTERVAL_SECONDS=3
+      - GENERATOR_DB_WRITE=true
+    depends_on:
+      singlestore:
+        condition: service_healthy
+      - redpanda
+
+networks:
+  default:
+    name: leads_demo_net
